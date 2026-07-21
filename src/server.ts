@@ -100,6 +100,18 @@ app.post('/api/admin/bookings/:id/close', authenticateAdminJWT, closeBooking);
 
 app.get('/api/admin/dashboard', authenticateAdminJWT, getDashboardStats);
 
+// Root endpoint
+app.get('/', (req, res) => {
+  res.status(200).json({
+    message: 'Welcome to the FitBros Car Rental API server!',
+    status: 'ok',
+    endpoints: {
+      health: '/health',
+      cars: '/api/cars'
+    }
+  });
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date() });
