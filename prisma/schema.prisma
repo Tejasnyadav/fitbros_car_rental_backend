@@ -1,0 +1,128 @@
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+enum CarStatus {
+  AVAILABLE
+  MAINTENANCE
+}
+
+enum BookingStatus {
+  PENDING_ADMIN_APPROVAL
+  REJECTED
+  APPROVED_PENDING_PAYMENT
+  CONFIRMED
+  ACTIVE
+  COMPLETED
+  CLOSED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  email     String    @unique
+  phone     String?
+  password  String    // JWT Auth hashed password
+  role      Role      @default(CUSTOMER)
+  bookings  Booking[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@map("users")
+}
+
+model Car {
+  id           String    @id @default(auto()) @map("_id") @db.ObjectId
+  name         String
+  type         String    // Hatchback, Sedan, SUV, Luxury
+  transmission String    // Manual, Automatic
+  pricePerDay  Float
+  image        String
+  status       CarStatus @default(AVAILABLE)
+  bookings     Booking[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("cars")
+}
+
+model Booking {
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String        @db.ObjectId
+  user           User          @relation(fields: [userId], references: [id])
+  carId          String        @db.ObjectId
+  car            Car           @relation(fields: [carId], references: [id])
+  fromDate       DateTime
+  toDate         DateTime
+  destination    String
+  purpose        String
+  members        Int
+  pickupLocation String
+  status         BookingStatus @default(PENDING_ADMIN_APPROVAL)
+  documents      Document?
+  agreement      Agreement?
+  payment        Payment?
+  invoice        Invoice?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@map("bookings")
+}
+
+model Document {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId String   @unique @db.ObjectId
+  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  license   String   // File URL / Path
+  aadhaar   String   // File URL / Path
+  pan       String   // File URL / Path
+  selfie    String   // File URL / Path
+
+  @@map("documents")
+}
+
+model Agreement {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId String   @unique @db.ObjectId
+  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  signature String   // Base64 Signature Data URL / Reference Path
+
+  @@map("agreements")
+}
+
+model Payment {
+  id        String        @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId String        @unique @db.ObjectId
+  booking   Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  method    String        // UPI, Card, Cash
+  amount    Float
+  status    PaymentStatus @default(PENDING)
+  createdAt DateTime      @default(now())
+
+  @@map("payments")
+}
+
+model Invoice {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId     String   @unique @db.ObjectId
+  booking       Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  invoiceNumber String   @unique
+
+  @@map("invoices")
+}
