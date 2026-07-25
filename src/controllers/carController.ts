@@ -34,7 +34,53 @@ export const getAllCarsForAdmin = async (req: Request, res: Response) => {
     const cars = await prisma.car.findMany({
       orderBy: { createdAt: 'desc' }
     });
-    return res.status(200).json({ cars });
+
+    const now = new Date();
+
+    // Query active/confirmed bookings overlapping the current timestamp
+    const activeBookingsToday = await prisma.booking.findMany({
+      where: {
+        status: { notIn: ['REJECTED', 'CLOSED'] },
+        fromDate: { lte: now },
+        toDate: { gte: now }
+      },
+      select: {
+        carId: true,
+        status: true
+      }
+    });
+
+    // Create a map of carId to status today
+    const bookingStatusMap = new Map(activeBookingsToday.map(b => [b.carId, b.status]));
+
+    const carsWithAvailability = cars.map(car => {
+      const activeStatusToday = bookingStatusMap.get(car.id);
+      
+      let availabilityMessage = 'Available';
+      let isAvailable = true;
+
+      if (car.status === 'MAINTENANCE') {
+        availabilityMessage = 'Maintenance';
+        isAvailable = false;
+      } else if (activeStatusToday) {
+        isAvailable = false;
+        if (activeStatusToday === 'ACTIVE') {
+          availabilityMessage = 'On Trip';
+        } else if (activeStatusToday === 'CONFIRMED') {
+          availabilityMessage = 'Booked';
+        } else {
+          availabilityMessage = 'Reserved'; // e.g. APPROVED_PENDING_PAYMENT, PENDING_ADMIN_APPROVAL
+        }
+      }
+
+      return {
+        ...car,
+        isAvailable,
+        availabilityMessage
+      };
+    });
+
+    return res.status(200).json({ cars: carsWithAvailability });
   } catch (error: any) {
     console.error('Fetch Cars Admin Error:', error);
     return res.status(500).json({ message: 'Failed to fetch fleet.' });
