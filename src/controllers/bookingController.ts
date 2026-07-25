@@ -320,43 +320,27 @@ export const processPayment = async (req: AuthenticatedRequest, res: Response) =
       return res.status(400).json({ message: 'Booking must be approved by admin prior to payment.' });
     }
 
-    // For cash payments, the payment remains PENDING until Admin confirms receipt.
-    // For Card / UPI, we mock complete it instantly.
-    const isInstantComplete = method !== 'Cash';
-
-    // Update Booking status to CONFIRMED (if instant)
-    const bookingStatus = isInstantComplete ? 'CONFIRMED' : 'APPROVED_PENDING_PAYMENT';
-    const paymentStatus = isInstantComplete ? 'COMPLETED' : 'PENDING';
-
-    const invoiceNum = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+    if (method !== 'Cash') {
+      return res.status(400).json({ message: 'Online payments must be processed through Razorpay checkout.' });
+    }
 
     const updatedBooking = await prisma.booking.update({
       where: { id },
       data: {
-        status: bookingStatus,
+        status: 'APPROVED_PENDING_PAYMENT',
         payment: {
           create: {
             method,
             amount: parseFloat(amount),
-            status: paymentStatus
+            status: 'PENDING'
           }
-        },
-        // Auto create invoice if paid instantly
-        ...(isInstantComplete && {
-          invoice: {
-            create: {
-              invoiceNumber: invoiceNum
-            }
-          }
-        })
+        }
       },
       include: { payment: true, invoice: true }
     });
 
     return res.status(200).json({
-      message: isInstantComplete 
-        ? 'Payment completed successfully. Booking is confirmed.' 
-        : 'Cash payment choice logged. Booking is pending admin verification of cash.',
+      message: 'Cash payment choice logged. Booking is pending admin verification of cash.',
       booking: updatedBooking
     });
   } catch (error: any) {
@@ -643,6 +627,10 @@ export const createRazorpayOrder = async (req: AuthenticatedRequest, res: Respon
 
     // Razorpay orders expect the amount in paise (1 INR = 100 Paise)
     const amountInPaise = Math.round(totalAmount * 100);
+
+    if (amountInPaise < 100) {
+      return res.status(400).json({ message: 'Razorpay order amount must be at least 100 paise.' });
+    }
 
     const options = {
       amount: amountInPaise,
