@@ -102,6 +102,7 @@ model Agreement {
   bookingId String   @unique @db.ObjectId
   booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   signature String   // Base64 Signature Data URL / Reference Path
+  pdfUrl    String?  // Reference path to the agreement PDF
 
   @@map("agreements")
 }

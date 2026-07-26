@@ -40,7 +40,8 @@ export const createBooking = async (req: AuthenticatedRequest, res: Response) =>
       aadhaar, // Base64 or URL
       pan,     // Base64 or URL
       selfie,  // Base64 or URL
-      signature // Base64 signature
+      signature, // Base64 signature
+      pdfUrl   // PDF URL (default is /lease_agreement.pdf)
     } = req.body;
 
     if (!carId || !fromDate || !toDate || !destination || !purpose || !members || !pickupLocation) {
@@ -96,7 +97,8 @@ export const createBooking = async (req: AuthenticatedRequest, res: Response) =>
         },
         agreement: {
           create: {
-            signature
+            signature,
+            pdfUrl: pdfUrl || '/lease_agreement.pdf'
           }
         }
       },
