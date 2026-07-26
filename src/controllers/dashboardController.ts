@@ -92,6 +92,71 @@ export const getDashboardStats = async (req: Request, res: Response) => {
       { status: 'Maintenance', count: maintenanceCount }
     ];
 
+    // Calculate most and least booked cars
+    const bookings = await prisma.booking.findMany({
+      select: { carId: true }
+    });
+
+    const carCounts: { [key: string]: { name: string; count: number } } = {};
+    const allCars = await prisma.car.findMany({ select: { id: true, name: true } });
+    
+    for (const c of allCars) {
+      carCounts[c.id] = { name: c.name, count: 0 };
+    }
+
+    for (const b of bookings) {
+      if (carCounts[b.carId]) {
+        carCounts[b.carId].count++;
+      }
+    }
+
+    const sortedCars = Object.values(carCounts).sort((a, b) => b.count - a.count);
+    const mostBooked = sortedCars.length > 0 ? sortedCars[0] : { name: 'N/A', count: 0 };
+    const leastBooked = sortedCars.length > 0 ? sortedCars[sortedCars.length - 1] : { name: 'N/A', count: 0 };
+
+    // Query user details with spending and booking count
+    const bookedUsers = await prisma.user.findMany({
+      where: {
+        role: 'CUSTOMER',
+        bookings: { some: {} }
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        bookings: {
+          select: {
+            payment: {
+              select: {
+                status: true,
+                amount: true
+              }
+            }
+          }
+        }
+      }
+    });
+
+    const userDetails = bookedUsers.map(u => {
+      const bookingsCount = u.bookings.length;
+      const totalSpend = u.bookings.reduce((sum, b) => {
+        if (b.payment && b.payment.status === 'COMPLETED') {
+          return sum + b.payment.amount;
+        }
+        return sum;
+      }, 0);
+
+      return {
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        phone: u.phone || 'N/A',
+        bookingsCount,
+        totalSpend
+      };
+    });
+
     return res.status(200).json({
       stats: {
         activeBookings,
@@ -101,7 +166,10 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         totalCars,
         pendingApprovals,
         completedTrips,
-        monthlyBookings
+        monthlyBookings,
+        mostBooked,
+        leastBooked,
+        userDetails
       },
       charts: {
         revenueChart,
