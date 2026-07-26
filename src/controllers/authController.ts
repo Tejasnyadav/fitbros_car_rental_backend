@@ -12,7 +12,7 @@ const generateTokenAndSetCookie = (res: Response, payload: { id: string; email: 
   
   res.cookie('token', token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.NODE_ENV === 'production' && process.env.COOKIE_SECURE !== 'false',
     sameSite: 'lax',
     maxAge: COOKIE_MAX_AGE,
   });
@@ -25,7 +25,7 @@ const generateAdminTokenAndSetCookie = (res: Response, payload: { id: string; em
   
   res.cookie('admin_token', token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.NODE_ENV === 'production' && process.env.COOKIE_SECURE !== 'false',
     sameSite: 'lax',
     maxAge: COOKIE_MAX_AGE,
   });
