@@ -232,7 +232,14 @@ export const getAdminProfile = async (req: AuthenticatedRequest, res: Response) 
 
 // Logout
 export const logout = (req: AuthenticatedRequest, res: Response) => {
-  res.clearCookie('token');
-  res.clearCookie('admin_token');
+  const cookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production' && process.env.COOKIE_SECURE !== 'false',
+    sameSite: (process.env.COOKIE_SAMESITE as any) || (process.env.NODE_ENV === 'production' ? 'none' : 'lax'),
+    path: '/'
+  };
+
+  res.clearCookie('token', cookieOptions);
+  res.clearCookie('admin_token', cookieOptions);
   return res.status(200).json({ message: 'Logged out successfully.' });
 };
