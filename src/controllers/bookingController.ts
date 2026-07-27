@@ -164,8 +164,6 @@ export const getUserActiveBooking = async (req: AuthenticatedRequest, res: Respo
       },
       include: {
         car: true,
-        documents: true,
-        agreement: true,
         payment: true,
         invoice: true
       },
