@@ -4,10 +4,37 @@ import { AuthenticatedRequest } from '../middleware/auth';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 
+const razorpayMode = (process.env.RAZORPAY_MODE || 'test').toLowerCase();
+const razorpayKeyId = process.env.RAZORPAY_KEY_ID || '';
+const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || '';
+
 const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID || '',
-  key_secret: process.env.RAZORPAY_KEY_SECRET || ''
+  key_id: razorpayKeyId,
+  key_secret: razorpayKeySecret
 });
+
+const normalizeRazorpayMethod = (value?: string): string => {
+  const normalized = (value || 'Card').toLowerCase();
+
+  switch (normalized) {
+    case 'upi': return 'UPI';
+    case 'wallet': return 'Wallet';
+    case 'netbanking': return 'NetBanking';
+    case 'emi': return 'EMI';
+    case 'paylater': return 'PayLater';
+    case 'cash': return 'Cash';
+    case 'card':
+    default: return 'Card';
+  }
+};
+
+const getRazorpayConfigError = () => {
+  if (!razorpayKeyId || !razorpayKeySecret) {
+    return 'Razorpay credentials are not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in the backend environment.';
+  }
+
+  return null;
+};
 
 // Helper: Check Date Overlap
 const hasOverlap = async (carId: string, fromDate: Date, toDate: Date): Promise<boolean> => {
@@ -619,6 +646,11 @@ export const createRazorpayOrder = async (req: AuthenticatedRequest, res: Respon
       return res.status(400).json({ message: 'Booking must be approved by admin prior to payment.' });
     }
 
+    const razorpayConfigError = getRazorpayConfigError();
+    if (razorpayConfigError) {
+      return res.status(500).json({ message: razorpayConfigError });
+    }
+
     // Calculate exact booking cost
     const diff = booking.toDate.getTime() - booking.fromDate.getTime();
     const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
@@ -644,7 +676,8 @@ export const createRazorpayOrder = async (req: AuthenticatedRequest, res: Respon
       orderId: order.id,
       amount: order.amount,
       currency: order.currency,
-      keyId: process.env.RAZORPAY_KEY_ID
+      keyId: razorpayKeyId,
+      mode: razorpayMode
     });
   } catch (error: any) {
     console.error('Create Razorpay Order Error:', error);
@@ -656,7 +689,14 @@ export const createRazorpayOrder = async (req: AuthenticatedRequest, res: Respon
 export const verifyRazorpayPayment = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body;
+    const {
+      razorpay_payment_id,
+      razorpay_order_id,
+      razorpay_signature,
+      payment_method,
+      method,
+      paymentMethod
+    } = req.body;
 
     if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature) {
       return res.status(400).json({ message: 'Missing Razorpay payment parameters.' });
@@ -676,6 +716,9 @@ export const verifyRazorpayPayment = async (req: AuthenticatedRequest, res: Resp
     }
 
     const keySecret = process.env.RAZORPAY_KEY_SECRET || '';
+    if (!keySecret) {
+      return res.status(500).json({ message: 'Razorpay secret is missing. Check the backend environment configuration.' });
+    }
 
     // Create HMAC SHA256 signature
     const hmac = crypto.createHmac('sha256', keySecret);
@@ -694,13 +737,24 @@ export const verifyRazorpayPayment = async (req: AuthenticatedRequest, res: Resp
 
     const invoiceNum = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
 
+    let resolvedPaymentMethod = normalizeRazorpayMethod(payment_method || method || paymentMethod);
+
+    try {
+      const razorpayPaymentDetails = await razorpay.payments.fetch(razorpay_payment_id);
+      if (razorpayPaymentDetails?.method) {
+        resolvedPaymentMethod = normalizeRazorpayMethod(razorpayPaymentDetails.method);
+      }
+    } catch (fetchError) {
+      console.warn('Razorpay payment fetch failed; falling back to request-derived method.', fetchError);
+    }
+
     const updated = await prisma.booking.update({
       where: { id },
       data: {
         status: 'CONFIRMED',
         payment: {
           create: {
-            method: 'Card',
+            method: resolvedPaymentMethod,
             amount: totalAmount,
             status: 'COMPLETED'
           }
@@ -713,6 +767,16 @@ export const verifyRazorpayPayment = async (req: AuthenticatedRequest, res: Resp
       },
       include: { payment: true, invoice: true }
     });
+
+    if (updated.payment) {
+      console.log('Razorpay payment verified for booking', id, {
+        method: updated.payment.method,
+        amount: updated.payment.amount,
+        status: updated.payment.status,
+        paymentId: razorpay_payment_id,
+        orderId: razorpay_order_id
+      });
+    }
 
     return res.status(200).json({
       message: 'Payment verified and booking confirmed successfully.',

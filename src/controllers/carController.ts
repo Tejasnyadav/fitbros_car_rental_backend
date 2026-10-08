@@ -139,8 +139,13 @@ export const deleteCar = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Cannot delete vehicle. It is currently locked in an active booking.' });
     }
 
+    // Prisma MongoDB does not automatically cascade delete relations that don't have onDelete: Cascade
+    // We must manually delete the bookings associated with this car.
+    // (Documents, Agreements, Payments, Invoices cascade from Booking automatically if configured in schema)
+    await prisma.booking.deleteMany({ where: { carId: id } });
+
     await prisma.car.delete({ where: { id } });
-    return res.status(200).json({ message: 'Vehicle deleted from fleet successfully.' });
+    return res.status(200).json({ message: 'Vehicle and all its historical bookings deleted from fleet successfully.' });
   } catch (error: any) {
     console.error('Delete Car Error:', error);
     return res.status(500).json({ message: 'Failed to delete vehicle.' });

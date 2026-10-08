@@ -43,44 +43,70 @@ export const getDashboardStats = async (req: Request, res: Response) => {
       }
     });
 
-    // Calculate Revenues
-    // Total Revenue from all successful/completed payments
-    const payments = await prisma.payment.findMany({
-      where: { status: 'COMPLETED' }
-    });
-    const totalRevenue = payments.reduce((acc, curr) => acc + curr.amount, 0);
-
-    // Monthly Revenue from completed payments this month
-    const monthlyPayments = await prisma.payment.findMany({
+    // Calculate Revenues from Bookings instead of just Payments to reflect all confirmed/completed trips
+    const validBookings = await prisma.booking.findMany({
       where: {
-        status: 'COMPLETED',
-        createdAt: {
-          gte: startOfMonth,
-          lte: endOfMonth
-        }
-      }
+        status: { in: ['CONFIRMED', 'ACTIVE', 'COMPLETED', 'CLOSED'] }
+      },
+      include: { car: true }
     });
-    const monthlyRevenue = monthlyPayments.reduce((acc, curr) => acc + curr.amount, 0);
+
+    let totalRevenue = 0;
+    let monthlyRevenue = 0;
+
+    for (const b of validBookings) {
+      const diff = b.toDate.getTime() - b.fromDate.getTime();
+      const days = Math.max(1, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+      const subtotal = b.car.pricePerDay * days;
+      const amount = subtotal + Math.round(subtotal * 0.1); // Including 10% tax/fee like in bookingController
+
+      totalRevenue += amount;
+
+      if (b.createdAt >= startOfMonth && b.createdAt <= endOfMonth) {
+        monthlyRevenue += amount;
+      }
+    }
 
     // 2. Chart Visualizations Data
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     
-    // Revenue over time (mocked/grouped daily revenue for the current month)
-    const revenueChart = [
-      { name: 'Week 1', revenue: monthlyRevenue * 0.2 },
-      { name: 'Week 2', revenue: monthlyRevenue * 0.25 },
-      { name: 'Week 3', revenue: monthlyRevenue * 0.35 },
-      { name: 'Week 4', revenue: monthlyRevenue * 0.2 }
-    ];
+    // Revenue over time (last 6 months)
+    const revenueChart = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const start = new Date(d.getFullYear(), d.getMonth(), 1);
+      const end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+      
+      const monthPayments = await prisma.payment.findMany({
+        where: {
+          status: 'COMPLETED',
+          createdAt: { gte: start, lte: end }
+        }
+      });
+      const rev = monthPayments.reduce((sum, p) => sum + p.amount, 0);
+      revenueChart.push({
+        name: monthNames[d.getMonth()],
+        revenue: rev
+      });
+    }
 
-    // Booking Trends over time
-    const bookingChart = [
-      { name: 'Jan', bookings: Math.floor(monthlyBookings * 0.5) },
-      { name: 'Feb', bookings: Math.floor(monthlyBookings * 0.7) },
-      { name: 'Mar', bookings: Math.floor(monthlyBookings * 0.9) },
-      { name: 'Apr', bookings: Math.floor(monthlyBookings * 1.1) },
-      { name: 'May', bookings: Math.floor(monthlyBookings * 1.3) },
-      { name: 'Jun', bookings: monthlyBookings }
-    ];
+    // Booking Trends over time (last 6 months)
+    const bookingChart = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const start = new Date(d.getFullYear(), d.getMonth(), 1);
+      const end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+      
+      const count = await prisma.booking.count({
+        where: {
+          createdAt: { gte: start, lte: end }
+        }
+      });
+      bookingChart.push({
+        name: monthNames[d.getMonth()],
+        bookings: count
+      });
+    }
 
     // Vehicle utilization status
     const maintenanceCount = await prisma.car.count({ where: { status: 'MAINTENANCE' } });
