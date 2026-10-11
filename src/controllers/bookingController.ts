@@ -4,6 +4,15 @@ import { AuthenticatedRequest } from '../middleware/auth';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 
+const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
+
+const calculateBookingTotal = (pricePerDay: number, fromDate: Date, toDate: Date): number => {
+  const duration = toDate.getTime() - fromDate.getTime();
+  const days = Math.max(1, Math.ceil(duration / DAY_IN_MILLISECONDS));
+  const subtotal = pricePerDay * days;
+  return subtotal + Math.round(subtotal * 0.05);
+};
+
 const razorpayMode = (process.env.RAZORPAY_MODE || 'test').toLowerCase();
 const razorpayKeyId = process.env.RAZORPAY_KEY_ID || '';
 const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET || '';
@@ -42,8 +51,8 @@ const hasOverlap = async (carId: string, fromDate: Date, toDate: Date): Promise<
     where: {
       carId,
       status: { notIn: ['REJECTED', 'CLOSED'] },
-      fromDate: { lte: toDate },
-      toDate: { gte: fromDate }
+      fromDate: { lt: toDate },
+      toDate: { gt: fromDate }
     }
   });
   return !!overlap;
@@ -92,14 +101,23 @@ export const createBooking = async (req: AuthenticatedRequest, res: Response) =>
       return res.status(400).json({ message: 'Selected dates must be within a realistic timeframe.' });
     }
 
+    if (start <= new Date()) {
+      return res.status(400).json({ message: 'Pickup date and time must be in the future.' });
+    }
+
     if (start >= end) {
-      return res.status(400).json({ message: 'Return date must be after pickup date.' });
+      return res.status(400).json({ message: 'Return date and time must be after pickup date and time.' });
+    }
+
+    const memberCount = Number(members);
+    if (!Number.isInteger(memberCount) || memberCount < 1) {
+      return res.status(400).json({ message: 'Number of members must be a positive whole number.' });
     }
 
     // CRITICAL overlap validation
     const exists = await hasOverlap(carId, start, end);
     if (exists) {
-      return res.status(400).json({ message: 'Already booked for selected dates' });
+      return res.status(400).json({ message: 'Already booked for selected pickup and return times.' });
     }
 
     // Create the booking and details
@@ -111,7 +129,7 @@ export const createBooking = async (req: AuthenticatedRequest, res: Response) =>
         toDate: end,
         destination,
         purpose,
-        members: parseInt(members),
+        members: memberCount,
         pickupLocation,
         status: 'PENDING_ADMIN_APPROVAL',
         documents: {
@@ -327,14 +345,39 @@ export const rejectBooking = async (req: Request, res: Response) => {
   }
 };
 
+// Delete Booking and its related KYC, agreement, payment, and invoice records (Admin Only)
+export const deleteBooking = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const booking = await prisma.booking.findUnique({ where: { id }, select: { id: true } });
+
+    if (!booking) {
+      return res.status(404).json({ message: 'Booking not found.' });
+    }
+
+    await prisma.$transaction([
+      prisma.document.deleteMany({ where: { bookingId: id } }),
+      prisma.agreement.deleteMany({ where: { bookingId: id } }),
+      prisma.payment.deleteMany({ where: { bookingId: id } }),
+      prisma.invoice.deleteMany({ where: { bookingId: id } }),
+      prisma.booking.delete({ where: { id } })
+    ]);
+
+    return res.status(200).json({ message: 'Booking and its related records were deleted.' });
+  } catch (error: any) {
+    console.error('Delete Booking Error:', error);
+    return res.status(500).json({ message: 'Failed to delete booking.' });
+  }
+};
+
 // Process Dummy Payment (Customer)
 export const processPayment = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { method, amount } = req.body;
+    const { method } = req.body;
 
-    if (!method || !amount) {
-      return res.status(400).json({ message: 'Payment method and amount are required.' });
+    if (!method) {
+      return res.status(400).json({ message: 'Payment method is required.' });
     }
 
     const booking = await prisma.booking.findUnique({
@@ -358,7 +401,7 @@ export const processPayment = async (req: AuthenticatedRequest, res: Response) =
         payment: {
           create: {
             method,
-            amount: parseFloat(amount),
+            amount: calculateBookingTotal(booking.car.pricePerDay, booking.fromDate, booking.toDate),
             status: 'PENDING'
           }
         }
@@ -651,11 +694,7 @@ export const createRazorpayOrder = async (req: AuthenticatedRequest, res: Respon
       return res.status(500).json({ message: razorpayConfigError });
     }
 
-    // Calculate exact booking cost
-    const diff = booking.toDate.getTime() - booking.fromDate.getTime();
-    const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
-    const subtotal = booking.car.pricePerDay * days;
-    const totalAmount = subtotal + Math.round(subtotal * 0.1);
+    const totalAmount = calculateBookingTotal(booking.car.pricePerDay, booking.fromDate, booking.toDate);
 
     // Razorpay orders expect the amount in paise (1 INR = 100 Paise)
     const amountInPaise = Math.round(totalAmount * 100);
@@ -729,11 +768,7 @@ export const verifyRazorpayPayment = async (req: AuthenticatedRequest, res: Resp
       return res.status(400).json({ message: 'Payment signature verification failed. Transaction tampered.' });
     }
 
-    // Calculate booking cost
-    const diff = booking.toDate.getTime() - booking.fromDate.getTime();
-    const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
-    const subtotal = booking.car.pricePerDay * days;
-    const totalAmount = subtotal + Math.round(subtotal * 0.1);
+    const totalAmount = calculateBookingTotal(booking.car.pricePerDay, booking.fromDate, booking.toDate);
 
     const invoiceNum = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
 

@@ -184,6 +184,10 @@ export const getCarsForUser = async (req: Request, res: Response) => {
         return res.status(400).json({ message: 'Invalid pickup or return date parameters.' });
       }
 
+      if (start >= end) {
+        return res.status(400).json({ message: 'Return date and time must be after pickup date and time.' });
+      }
+
       const startYear = start.getFullYear();
       const endYear = end.getFullYear();
       if (startYear < 2000 || startYear > 2100 || endYear < 2000 || endYear > 2100) {
@@ -195,8 +199,8 @@ export const getCarsForUser = async (req: Request, res: Response) => {
       const overlappingBookings = await prisma.booking.findMany({
         where: {
           status: { notIn: ['REJECTED', 'CLOSED'] },
-          fromDate: { lte: end },
-          toDate: { gte: start }
+          fromDate: { lt: end },
+          toDate: { gt: start }
         },
         select: {
           carId: true

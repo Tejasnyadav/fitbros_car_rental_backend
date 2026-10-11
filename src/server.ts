@@ -23,6 +23,7 @@ import {
 
 import {
   createBooking,
+  deleteBooking,
   getBookingById,
   getUserActiveBooking,
   getUserBookingHistory,
@@ -56,7 +57,7 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json({ limit: '15mb' })); // Support larger base64 signatures/images
+app.use(express.json({ limit: '64mb' })); // Allow four 10 MB KYC files encoded as base64
 app.use(cookieParser());
 
 // REST Router mapping
@@ -92,6 +93,7 @@ app.put('/api/admin/cars/:id', authenticateAdminJWT, updateCar);
 app.delete('/api/admin/cars/:id', authenticateAdminJWT, deleteCar);
 
 app.get('/api/admin/bookings', authenticateAdminJWT, getAllBookingsForAdmin);
+app.delete('/api/admin/bookings/:id', authenticateAdminJWT, deleteBooking);
 app.post('/api/admin/bookings/:id/approve', authenticateAdminJWT, approveBooking);
 app.post('/api/admin/bookings/:id/reject', authenticateAdminJWT, rejectBooking);
 app.post('/api/admin/bookings/:id/confirm-cash', authenticateAdminJWT, confirmCashPayment);

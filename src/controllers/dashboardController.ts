@@ -56,9 +56,9 @@ export const getDashboardStats = async (req: Request, res: Response) => {
 
     for (const b of validBookings) {
       const diff = b.toDate.getTime() - b.fromDate.getTime();
-      const days = Math.max(1, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+      const days = Math.max(1, Math.ceil(diff / (24 * 60 * 60 * 1000)));
       const subtotal = b.car.pricePerDay * days;
-      const amount = subtotal + Math.round(subtotal * 0.1); // Including 10% tax/fee like in bookingController
+      const amount = subtotal + Math.round(subtotal * 0.05);
 
       totalRevenue += amount;
 
