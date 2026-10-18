@@ -230,6 +230,36 @@ export const getAdminProfile = async (req: AuthenticatedRequest, res: Response) 
   }
 };
 
+export const getSessionProfile = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const sessions = req.sessionUsers || [];
+    const customerToken = sessions.find(session => session.role === 'CUSTOMER');
+    const adminToken = sessions.find(session => session.role === 'ADMIN');
+    const [customerSession, adminSession] = await Promise.all([
+      customerToken
+        ? prisma.user.findUnique({
+            where: { id: customerToken.id.toString() },
+            select: { id: true, name: true, email: true, phone: true, role: true }
+          })
+        : null,
+      adminToken
+        ? prisma.user.findUnique({
+            where: { id: adminToken.id.toString() },
+            select: { id: true, name: true, email: true, phone: true, role: true }
+          })
+        : null
+    ]);
+
+    return res.status(200).json({
+      user: customerSession?.role === 'CUSTOMER' ? customerSession : null,
+      admin: adminSession?.role === 'ADMIN' ? adminSession : null
+    });
+  } catch (error: any) {
+    console.error('Session Profile Error:', error);
+    return res.status(500).json({ message: 'Failed to fetch session profile.' });
+  }
+};
+
 // Logout
 export const logout = (req: AuthenticatedRequest, res: Response) => {
   const cookieOptions = {

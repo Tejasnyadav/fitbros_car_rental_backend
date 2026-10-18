@@ -10,6 +10,7 @@ export interface AuthenticatedRequest extends Request {
     role: 'CUSTOMER' | 'ADMIN';
     name: String;
   };
+  sessionUsers?: Array<NonNullable<AuthenticatedRequest['user']>>;
 }
 
 export const authenticateJWT = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -42,6 +43,30 @@ export const authenticateAnyJWT = (req: AuthenticatedRequest, res: Response, nex
   } catch (error) {
     return res.status(401).json({ message: 'Invalid or expired authentication token.' });
   }
+};
+
+export const authenticateSessions = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  const tokens = [req.cookies?.admin_token, req.cookies?.token]
+    .filter((token): token is string => Boolean(token));
+
+  if (tokens.length === 0) {
+    const headerToken = req.headers.authorization?.split(' ')[1];
+    if (headerToken) tokens.push(headerToken);
+  }
+
+  req.sessionUsers = [];
+  for (const token of tokens) {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET) as AuthenticatedRequest['user'];
+      if (decoded && (decoded.role === 'ADMIN' || decoded.role === 'CUSTOMER')) {
+        req.sessionUsers.push(decoded);
+      }
+    } catch {
+      // An expired token for one role should not invalidate the other role's session.
+    }
+  }
+
+  next();
 };
 
 export const authenticateAdminJWT = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {

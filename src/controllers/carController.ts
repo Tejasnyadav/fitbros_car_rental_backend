@@ -39,26 +39,38 @@ export const createCar = async (req: Request, res: Response) => {
 // Get all cars (Admin Fleet Manager)
 export const getAllCarsForAdmin = async (req: Request, res: Response) => {
   try {
-    const cars = await prisma.car.findMany({
-      orderBy: { createdAt: 'desc' }
-    });
+    const now = new Date();
+    const [cars, activeBookingsToday] = await Promise.all([
+      prisma.car.findMany({
+        select: {
+          id: true,
+          name: true,
+          type: true,
+          transmission: true,
+          fuelType: true,
+          seatingCapacity: true,
+          displayOrder: true,
+          pricePerDay: true,
+          image: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true
+        }
+      }),
+      prisma.booking.findMany({
+        where: {
+          ...getReservationOverlapWhere(now, new Date(now.getTime() + 1), now)
+        },
+        select: {
+          carId: true,
+          status: true
+        }
+      })
+    ]);
     cars.sort((first, second) =>
       (first.displayOrder ?? 0) - (second.displayOrder ?? 0)
       || second.createdAt.getTime() - first.createdAt.getTime()
     );
-
-    const now = new Date();
-
-    // Only unexpired holds and confirmed trips should affect current fleet availability.
-    const activeBookingsToday = await prisma.booking.findMany({
-      where: {
-        ...getReservationOverlapWhere(now, new Date(now.getTime() + 1), now)
-      },
-      select: {
-        carId: true,
-        status: true
-      }
-    });
 
     // Create a map of carId to status today
     const bookingStatusMap = new Map(activeBookingsToday.map(b => [b.carId, b.status]));
@@ -196,7 +208,21 @@ export const getCarsForUser = async (req: Request, res: Response) => {
 
     // Get all cars matching types/transmissions
     const cars = await prisma.car.findMany({
-      where: filters
+      where: filters,
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        transmission: true,
+        fuelType: true,
+        seatingCapacity: true,
+        displayOrder: true,
+        pricePerDay: true,
+        image: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true
+      }
     });
     cars.sort((first, second) =>
       (first.displayOrder ?? 0) - (second.displayOrder ?? 0)

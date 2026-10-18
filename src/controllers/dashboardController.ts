@@ -5,51 +5,73 @@ export const getDashboardStats = async (req: Request, res: Response) => {
   try {
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-
-    // 1. Metric Counts
-    const totalCars = await prisma.car.count();
-
-    const activeBookings = await prisma.booking.count({
-      where: {
-        status: { in: ['CONFIRMED', 'ACTIVE'] }
-      }
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const chartStart = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const months = Array.from({ length: 6 }, (_, index) => {
+      const date = new Date(now.getFullYear(), now.getMonth() - 5 + index, 1);
+      return { date, key: `${date.getFullYear()}-${date.getMonth()}` };
     });
 
-    const currentCarsOnRoad = await prisma.booking.count({
-      where: {
-        status: 'ACTIVE'
-      }
-    });
-
-    const pendingApprovals = await prisma.booking.count({
-      where: {
-        status: 'PENDING_ADMIN_APPROVAL'
-      }
-    });
-
-    const completedTrips = await prisma.booking.count({
-      where: {
-        status: { in: ['COMPLETED', 'CLOSED'] }
-      }
-    });
-
-    const monthlyBookings = await prisma.booking.count({
-      where: {
-        createdAt: {
-          gte: startOfMonth,
-          lte: endOfMonth
+    const [
+      totalCars,
+      activeBookings,
+      currentCarsOnRoad,
+      pendingApprovals,
+      completedTrips,
+      monthlyBookings,
+      validBookings,
+      chartPayments,
+      chartBookings,
+      maintenanceCount,
+      bookings,
+      allCars,
+      bookedUsers
+    ] = await Promise.all([
+      prisma.car.count(),
+      prisma.booking.count({ where: { status: { in: ['CONFIRMED', 'ACTIVE'] } } }),
+      prisma.booking.count({ where: { status: 'ACTIVE' } }),
+      prisma.booking.count({ where: { status: 'PENDING_ADMIN_APPROVAL' } }),
+      prisma.booking.count({ where: { status: { in: ['COMPLETED', 'CLOSED'] } } }),
+      prisma.booking.count({ where: { createdAt: { gte: startOfMonth, lt: nextMonth } } }),
+      prisma.booking.findMany({
+        where: { status: { in: ['CONFIRMED', 'ACTIVE', 'COMPLETED', 'CLOSED'] } },
+        select: {
+          fromDate: true,
+          toDate: true,
+          createdAt: true,
+          car: { select: { pricePerDay: true } }
         }
-      }
-    });
-
-    // Calculate Revenues from Bookings instead of just Payments to reflect all confirmed/completed trips
-    const validBookings = await prisma.booking.findMany({
-      where: {
-        status: { in: ['CONFIRMED', 'ACTIVE', 'COMPLETED', 'CLOSED'] }
-      },
-      include: { car: true }
-    });
+      }),
+      prisma.payment.findMany({
+        where: {
+          status: 'COMPLETED',
+          createdAt: { gte: chartStart, lt: nextMonth }
+        },
+        select: { amount: true, createdAt: true }
+      }),
+      prisma.booking.findMany({
+        where: { createdAt: { gte: chartStart, lt: nextMonth } },
+        select: { createdAt: true }
+      }),
+      prisma.car.count({ where: { status: 'MAINTENANCE' } }),
+      prisma.booking.findMany({ select: { carId: true } }),
+      prisma.car.findMany({ select: { id: true, name: true } }),
+      prisma.user.findMany({
+        where: { role: 'CUSTOMER', bookings: { some: {} } },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          bookings: {
+            select: {
+              payment: { select: { status: true, amount: true } }
+            }
+          }
+        }
+      })
+    ]);
 
     let totalRevenue = 0;
     let monthlyRevenue = 0;
@@ -62,54 +84,32 @@ export const getDashboardStats = async (req: Request, res: Response) => {
 
       totalRevenue += amount;
 
-      if (b.createdAt >= startOfMonth && b.createdAt <= endOfMonth) {
+      if (b.createdAt >= startOfMonth && b.createdAt < nextMonth) {
         monthlyRevenue += amount;
       }
     }
 
-    // 2. Chart Visualizations Data
-    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    
-    // Revenue over time (last 6 months)
-    const revenueChart = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const start = new Date(d.getFullYear(), d.getMonth(), 1);
-      const end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
-      
-      const monthPayments = await prisma.payment.findMany({
-        where: {
-          status: 'COMPLETED',
-          createdAt: { gte: start, lte: end }
-        }
-      });
-      const rev = monthPayments.reduce((sum, p) => sum + p.amount, 0);
-      revenueChart.push({
-        name: monthNames[d.getMonth()],
-        revenue: rev
-      });
+    // Build the six-month charts from one bounded query per collection.
+    const revenueByMonth = new Map<string, number>();
+    for (const payment of chartPayments) {
+      const key = `${payment.createdAt.getFullYear()}-${payment.createdAt.getMonth()}`;
+      revenueByMonth.set(key, (revenueByMonth.get(key) || 0) + payment.amount);
     }
-
-    // Booking Trends over time (last 6 months)
-    const bookingChart = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const start = new Date(d.getFullYear(), d.getMonth(), 1);
-      const end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
-      
-      const count = await prisma.booking.count({
-        where: {
-          createdAt: { gte: start, lte: end }
-        }
-      });
-      bookingChart.push({
-        name: monthNames[d.getMonth()],
-        bookings: count
-      });
+    const bookingsByMonth = new Map<string, number>();
+    for (const booking of chartBookings) {
+      const key = `${booking.createdAt.getFullYear()}-${booking.createdAt.getMonth()}`;
+      bookingsByMonth.set(key, (bookingsByMonth.get(key) || 0) + 1);
     }
+    const revenueChart = months.map(({ date, key }) => ({
+      name: monthNames[date.getMonth()],
+      revenue: revenueByMonth.get(key) || 0
+    }));
+    const bookingChart = months.map(({ date, key }) => ({
+      name: monthNames[date.getMonth()],
+      bookings: bookingsByMonth.get(key) || 0
+    }));
 
     // Vehicle utilization status
-    const maintenanceCount = await prisma.car.count({ where: { status: 'MAINTENANCE' } });
     const availableCount = totalCars - currentCarsOnRoad - maintenanceCount;
 
     const vehicleChart = [
@@ -119,13 +119,8 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     ];
 
     // Calculate most and least booked cars
-    const bookings = await prisma.booking.findMany({
-      select: { carId: true }
-    });
-
     const carCounts: { [key: string]: { name: string; count: number } } = {};
-    const allCars = await prisma.car.findMany({ select: { id: true, name: true } });
-    
+
     for (const c of allCars) {
       carCounts[c.id] = { name: c.name, count: 0 };
     }
@@ -139,30 +134,6 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     const sortedCars = Object.values(carCounts).sort((a, b) => b.count - a.count);
     const mostBooked = sortedCars.length > 0 ? sortedCars[0] : { name: 'N/A', count: 0 };
     const leastBooked = sortedCars.length > 0 ? sortedCars[sortedCars.length - 1] : { name: 'N/A', count: 0 };
-
-    // Query user details with spending and booking count
-    const bookedUsers = await prisma.user.findMany({
-      where: {
-        role: 'CUSTOMER',
-        bookings: { some: {} }
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        bookings: {
-          select: {
-            payment: {
-              select: {
-                status: true,
-                amount: true
-              }
-            }
-          }
-        }
-      }
-    });
 
     const userDetails = bookedUsers.map(u => {
       const bookingsCount = u.bookings.length;

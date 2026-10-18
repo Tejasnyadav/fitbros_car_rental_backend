@@ -10,6 +10,7 @@ import {
   adminLogin,
   getProfile,
   getAdminProfile,
+  getSessionProfile,
   logout
 } from './controllers/authController';
 
@@ -45,7 +46,7 @@ import {
 } from './controllers/bookingController';
 
 import { getDashboardStats } from './controllers/dashboardController';
-import { authenticateJWT, authenticateAdminJWT, authenticateAnyJWT, requireRole } from './middleware/auth';
+import { authenticateJWT, authenticateAdminJWT, authenticateAnyJWT, authenticateSessions, requireRole } from './middleware/auth';
 
 dotenv.config();
 
@@ -72,6 +73,7 @@ app.post('/api/auth/admin-login', adminLogin);
 app.post('/api/auth/logout', logout);
 app.get('/api/auth/profile', authenticateJWT, getProfile);
 app.get('/api/auth/admin-profile', authenticateAdminJWT, getAdminProfile);
+app.get('/api/auth/session', authenticateSessions, getSessionProfile);
 
 // 2. Public / Catalog Search
 app.get('/api/cars', getCarsForUser);
