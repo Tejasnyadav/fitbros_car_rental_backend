@@ -490,6 +490,80 @@ export const confirmCashPayment = async (req: Request, res: Response) => {
   }
 };
 
+// Record payment received outside the online checkout flow (Admin Only)
+export const markPaymentReceived = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { method } = req.body;
+    const supportedMethods = ['Cash', 'UPI', 'Card', 'NetBanking', 'Wallet', 'Other'];
+
+    if (typeof method !== 'string' || !supportedMethods.includes(method)) {
+      return res.status(400).json({ message: 'Select a valid payment method.' });
+    }
+
+    const booking = await prisma.booking.findUnique({
+      where: { id },
+      include: { car: true, payment: true, invoice: true }
+    });
+
+    if (!booking) {
+      return res.status(404).json({ message: 'Booking not found.' });
+    }
+
+    if (booking.status !== 'APPROVED_PENDING_PAYMENT') {
+      return res.status(400).json({ message: 'Only approved bookings awaiting payment can be marked as paid.' });
+    }
+
+    if (booking.payment?.status === 'COMPLETED') {
+      return res.status(400).json({ message: 'Payment has already been completed for this booking.' });
+    }
+
+    if (await hasOverlap(booking.carId, booking.fromDate, booking.toDate, booking.id)) {
+      return res.status(409).json({ message: 'This booking conflicts with another active reservation and cannot be confirmed.' });
+    }
+
+    const amount = calculateBookingTotal(booking.car.pricePerDay, booking.fromDate, booking.toDate);
+    const invoiceNumber = booking.invoice?.invoiceNumber
+      || `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+
+    const updated = await prisma.booking.update({
+      where: { id },
+      data: {
+        status: 'CONFIRMED',
+        payment: booking.payment
+          ? {
+              update: {
+                method,
+                amount,
+                status: 'COMPLETED'
+              }
+            }
+          : {
+              create: {
+                method,
+                amount,
+                status: 'COMPLETED'
+              }
+            },
+        ...(!booking.invoice && {
+          invoice: {
+            create: { invoiceNumber }
+          }
+        })
+      },
+      include: { payment: true, invoice: true }
+    });
+
+    return res.status(200).json({
+      message: 'Payment recorded and booking confirmed successfully.',
+      booking: updated
+    });
+  } catch (error: any) {
+    console.error('Mark Payment Received Error:', error);
+    return res.status(500).json({ message: 'Failed to record payment.' });
+  }
+};
+
 // Start Trip (Admin Only)
 export const startTrip = async (req: Request, res: Response) => {
   try {

@@ -32,6 +32,7 @@ import {
   rejectBooking,
   processPayment,
   confirmCashPayment,
+  markPaymentReceived,
   startTrip,
   endTrip,
   closeBooking,
@@ -97,6 +98,7 @@ app.delete('/api/admin/bookings/:id', authenticateAdminJWT, deleteBooking);
 app.post('/api/admin/bookings/:id/approve', authenticateAdminJWT, approveBooking);
 app.post('/api/admin/bookings/:id/reject', authenticateAdminJWT, rejectBooking);
 app.post('/api/admin/bookings/:id/confirm-cash', authenticateAdminJWT, confirmCashPayment);
+app.post('/api/admin/bookings/:id/mark-paid', authenticateAdminJWT, markPaymentReceived);
 app.post('/api/admin/bookings/:id/start-trip', authenticateAdminJWT, startTrip);
 app.post('/api/admin/bookings/:id/end-trip', authenticateAdminJWT, endTrip);
 app.post('/api/admin/bookings/:id/close', authenticateAdminJWT, closeBooking);
