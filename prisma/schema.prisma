@@ -38,7 +38,7 @@ model User {
   name      String
   email     String    @unique
   phone     String?
-  password  String    // JWT Auth hashed password
+  password  String // JWT Auth hashed password
   role      Role      @default(CUSTOMER)
   bookings  Booking[]
   createdAt DateTime  @default(now())
@@ -48,16 +48,19 @@ model User {
 }
 
 model Car {
-  id           String    @id @default(auto()) @map("_id") @db.ObjectId
-  name         String
-  type         String    // Hatchback, Sedan, SUV, Luxury
-  transmission String    // Manual, Automatic
-  pricePerDay  Float
-  image        String
-  status       CarStatus @default(AVAILABLE)
-  bookings     Booking[]
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id              String    @id @default(auto()) @map("_id") @db.ObjectId
+  name            String
+  type            String // Hatchback, Sedan, SUV, Luxury
+  transmission    String // Manual, Automatic
+  fuelType        String?   @default("Petrol")
+  seatingCapacity Int?      @default(5)
+  displayOrder    Int?      @default(0)
+  pricePerDay     Float
+  image           String
+  status          CarStatus @default(AVAILABLE)
+  bookings        Booking[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   @@map("cars")
 }
@@ -74,6 +77,9 @@ model Booking {
   purpose        String
   members        Int
   pickupLocation String
+  discountType   String?       @default("NONE")
+  discountValue  Float?        @default(0)
+  discountAmount Float?        @default(0)
   status         BookingStatus @default(PENDING_ADMIN_APPROVAL)
   documents      Document?
   agreement      Agreement?
@@ -86,23 +92,23 @@ model Booking {
 }
 
 model Document {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  bookingId String   @unique @db.ObjectId
-  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  license   String   // File URL / Path
-  aadhaar   String   // File URL / Path
-  pan       String   // File URL / Path
-  selfie    String   // File URL / Path
+  id        String  @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId String  @unique @db.ObjectId
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  license   String // File URL / Path
+  aadhaar   String // File URL / Path
+  pan       String // File URL / Path
+  selfie    String // File URL / Path
 
   @@map("documents")
 }
 
 model Agreement {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  bookingId String   @unique @db.ObjectId
-  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  signature String   // Base64 Signature Data URL / Reference Path
-  pdfUrl    String?  // Reference path to the agreement PDF
+  id        String  @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId String  @unique @db.ObjectId
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  signature String // Base64 Signature Data URL / Reference Path
+  pdfUrl    String? // Reference path to the agreement PDF
 
   @@map("agreements")
 }
@@ -111,7 +117,7 @@ model Payment {
   id        String        @id @default(auto()) @map("_id") @db.ObjectId
   bookingId String        @unique @db.ObjectId
   booking   Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  method    String        // UPI, Card, Cash
+  method    String // UPI, Card, Cash
   amount    Float
   status    PaymentStatus @default(PENDING)
   createdAt DateTime      @default(now())
@@ -120,10 +126,18 @@ model Payment {
 }
 
 model Invoice {
-  id            String   @id @default(auto()) @map("_id") @db.ObjectId
-  bookingId     String   @unique @db.ObjectId
-  booking       Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  invoiceNumber String   @unique
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId      String    @unique @db.ObjectId
+  booking        Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  invoiceNumber  String    @unique
+  subtotal       Float?    @default(0)
+  discountAmount Float?    @default(0)
+  taxAmount      Float?    @default(0)
+  totalAmount    Float?    @default(0)
+  dailyRate      Float?    @default(0)
+  rentalDays     Int?      @default(0)
+  issuedAt       DateTime? @default(now())
 
+  @@index([issuedAt])
   @@map("invoices")
 }

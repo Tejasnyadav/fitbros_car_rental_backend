@@ -39,7 +39,9 @@ import {
   getUserNotifications,
   getAdminNotifications,
   createRazorpayOrder,
-  verifyRazorpayPayment
+  verifyRazorpayPayment,
+  setBookingDiscount,
+  exportMonthlyInvoices
 } from './controllers/bookingController';
 
 import { getDashboardStats } from './controllers/dashboardController';
@@ -94,6 +96,8 @@ app.put('/api/admin/cars/:id', authenticateAdminJWT, updateCar);
 app.delete('/api/admin/cars/:id', authenticateAdminJWT, deleteCar);
 
 app.get('/api/admin/bookings', authenticateAdminJWT, getAllBookingsForAdmin);
+app.get('/api/admin/invoices/export', authenticateAdminJWT, exportMonthlyInvoices);
+app.put('/api/admin/bookings/:id/discount', authenticateAdminJWT, setBookingDiscount);
 app.delete('/api/admin/bookings/:id', authenticateAdminJWT, deleteBooking);
 app.post('/api/admin/bookings/:id/approve', authenticateAdminJWT, approveBooking);
 app.post('/api/admin/bookings/:id/reject', authenticateAdminJWT, rejectBooking);

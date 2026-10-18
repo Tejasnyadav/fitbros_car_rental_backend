@@ -5,10 +5,14 @@ import { getBlockingBookingStatusWhere, getReservationOverlapWhere } from '../ut
 // Add new car (Admin Only)
 export const createCar = async (req: Request, res: Response) => {
   try {
-    const { name, type, transmission, pricePerDay, image, status } = req.body;
+    const { name, type, transmission, pricePerDay, image, status, fuelType = 'Petrol', seatingCapacity = 5, displayOrder = 0 } = req.body;
 
     if (!name || !type || !transmission || !pricePerDay || !image) {
       return res.status(400).json({ message: 'All car fields are required.' });
+    }
+
+    if (!['Petrol', 'Diesel'].includes(fuelType) || !Number.isInteger(Number(seatingCapacity)) || Number(seatingCapacity) < 1 || Number(seatingCapacity) > 100 || !Number.isInteger(Number(displayOrder)) || Number(displayOrder) < 0) {
+      return res.status(400).json({ message: 'Fuel type, seating capacity, or display order is invalid.' });
     }
 
     const newCar = await prisma.car.create({
@@ -16,6 +20,9 @@ export const createCar = async (req: Request, res: Response) => {
         name,
         type, // Hatchback, Sedan, SUV, Luxury
         transmission, // Manual, Automatic
+        fuelType,
+        seatingCapacity: Number(seatingCapacity),
+        displayOrder: Number(displayOrder),
         pricePerDay: parseFloat(pricePerDay),
         image,
         status: status || 'AVAILABLE'
@@ -35,6 +42,10 @@ export const getAllCarsForAdmin = async (req: Request, res: Response) => {
     const cars = await prisma.car.findMany({
       orderBy: { createdAt: 'desc' }
     });
+    cars.sort((first, second) =>
+      (first.displayOrder ?? 0) - (second.displayOrder ?? 0)
+      || second.createdAt.getTime() - first.createdAt.getTime()
+    );
 
     const now = new Date();
 
@@ -90,11 +101,21 @@ export const getAllCarsForAdmin = async (req: Request, res: Response) => {
 export const updateCar = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, type, transmission, pricePerDay, image, status } = req.body;
+    const { name, type, transmission, pricePerDay, image, status, fuelType, seatingCapacity, displayOrder } = req.body;
 
     const existingCar = await prisma.car.findUnique({ where: { id } });
     if (!existingCar) {
       return res.status(404).json({ message: 'Vehicle not found.' });
+    }
+
+    if (fuelType !== undefined && !['Petrol', 'Diesel'].includes(fuelType)) {
+      return res.status(400).json({ message: 'Fuel type must be Petrol or Diesel.' });
+    }
+    if (seatingCapacity !== undefined && (!Number.isInteger(Number(seatingCapacity)) || Number(seatingCapacity) < 1 || Number(seatingCapacity) > 100)) {
+      return res.status(400).json({ message: 'Seating capacity must be a whole number between 1 and 100.' });
+    }
+    if (displayOrder !== undefined && (!Number.isInteger(Number(displayOrder)) || Number(displayOrder) < 0)) {
+      return res.status(400).json({ message: 'Display order must be a non-negative whole number.' });
     }
 
     const updatedCar = await prisma.car.update({
@@ -103,6 +124,9 @@ export const updateCar = async (req: Request, res: Response) => {
         name: name !== undefined ? name : existingCar.name,
         type: type !== undefined ? type : existingCar.type,
         transmission: transmission !== undefined ? transmission : existingCar.transmission,
+        fuelType: fuelType !== undefined ? fuelType : existingCar.fuelType,
+        seatingCapacity: seatingCapacity !== undefined ? Number(seatingCapacity) : existingCar.seatingCapacity,
+        displayOrder: displayOrder !== undefined ? Number(displayOrder) : existingCar.displayOrder,
         pricePerDay: pricePerDay !== undefined ? parseFloat(pricePerDay) : existingCar.pricePerDay,
         image: image !== undefined ? image : existingCar.image,
         status: status !== undefined ? status : existingCar.status
@@ -172,9 +196,12 @@ export const getCarsForUser = async (req: Request, res: Response) => {
 
     // Get all cars matching types/transmissions
     const cars = await prisma.car.findMany({
-      where: filters,
-      orderBy: { pricePerDay: 'asc' }
+      where: filters
     });
+    cars.sort((first, second) =>
+      (first.displayOrder ?? 0) - (second.displayOrder ?? 0)
+      || first.pricePerDay - second.pricePerDay
+    );
 
     // If dates are provided, verify availability against bookings
     if (fromDate && toDate) {

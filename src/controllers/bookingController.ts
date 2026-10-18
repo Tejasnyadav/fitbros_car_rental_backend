@@ -8,12 +8,69 @@ import { getReservationOverlapWhere, isPaymentHoldExpired } from '../utils/booki
 const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
 const MAX_KYC_DOCUMENT_PAYLOAD_BYTES = 12 * 1024 * 1024;
 
-const calculateBookingTotal = (pricePerDay: number, fromDate: Date, toDate: Date): number => {
+type BookingDiscountType = 'NONE' | 'FIXED' | 'PERCENTAGE';
+
+const roundCurrency = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+
+const calculateBookingAmounts = (
+  pricePerDay: number,
+  fromDate: Date,
+  toDate: Date,
+  discountType: BookingDiscountType = 'NONE',
+  discountValue: number | null | undefined = 0
+) => {
   const duration = toDate.getTime() - fromDate.getTime();
   const days = Math.max(1, Math.ceil(duration / DAY_IN_MILLISECONDS));
-  const subtotal = pricePerDay * days;
-  return subtotal + Math.round(subtotal * 0.05);
+  const subtotal = roundCurrency(pricePerDay * days);
+  const normalizedDiscountValue = discountValue ?? 0;
+  const rawDiscount = discountType === 'PERCENTAGE'
+    ? subtotal * normalizedDiscountValue / 100
+    : discountType === 'FIXED'
+      ? normalizedDiscountValue
+      : 0;
+  const discountAmount = roundCurrency(Math.min(subtotal, rawDiscount));
+  const taxAmount = roundCurrency((subtotal - discountAmount) * 0.05);
+
+  return {
+    days,
+    dailyRate: pricePerDay,
+    subtotal,
+    discountAmount,
+    taxAmount,
+    totalAmount: roundCurrency(subtotal - discountAmount + taxAmount)
+  };
 };
+
+const getInvoiceData = (amounts: ReturnType<typeof calculateBookingAmounts>) => ({
+  subtotal: amounts.subtotal,
+  discountAmount: amounts.discountAmount,
+  taxAmount: amounts.taxAmount,
+  totalAmount: amounts.totalAmount,
+  dailyRate: amounts.dailyRate,
+  rentalDays: amounts.days
+});
+
+const calculateBookingAmountsForBooking = (booking: {
+  car: { pricePerDay: number };
+  fromDate: Date;
+  toDate: Date;
+  discountType: string | null;
+  discountValue: number | null;
+}) => {
+  const discountType: BookingDiscountType =
+    booking.discountType === 'FIXED' || booking.discountType === 'PERCENTAGE'
+      ? booking.discountType
+      : 'NONE';
+  return calculateBookingAmounts(
+    booking.car.pricePerDay,
+    booking.fromDate,
+    booking.toDate,
+    discountType,
+    booking.discountValue
+  );
+};
+
+const createInvoiceNumber = () => `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
 
 const razorpayMode = (process.env.RAZORPAY_MODE || 'test').toLowerCase();
 const razorpayKeyId = process.env.RAZORPAY_KEY_ID || '';
@@ -232,6 +289,7 @@ export const getUserActiveBooking = async (req: AuthenticatedRequest, res: Respo
       },
       include: {
         car: true,
+        user: { select: { id: true, name: true, email: true, phone: true } },
         payment: true,
         invoice: true
       },
@@ -257,6 +315,7 @@ export const getUserBookingHistory = async (req: AuthenticatedRequest, res: Resp
       },
       include: {
         car: true,
+        user: { select: { id: true, name: true, email: true, phone: true } },
         payment: true,
         invoice: true
       },
@@ -320,6 +379,138 @@ export const getAllBookingsForAdmin = async (req: Request, res: Response) => {
   }
 };
 
+export const exportMonthlyInvoices = async (req: Request, res: Response) => {
+  try {
+    const month = typeof req.query.month === 'string' ? req.query.month : '';
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+      return res.status(400).json({ message: 'Month must be provided in YYYY-MM format.' });
+    }
+
+    const [year, monthNumber] = month.split('-').map(Number);
+    if (year < 2000 || year > 2100) {
+      return res.status(400).json({ message: 'Export month must be within the supported year range.' });
+    }
+    const start = new Date(year, monthNumber - 1, 1);
+    const end = new Date(year, monthNumber, 1);
+    const [issuedInvoices, legacyPayments] = await Promise.all([
+      prisma.invoice.findMany({
+        where: { issuedAt: { gte: start, lt: end } },
+        include: {
+          booking: {
+            include: {
+              user: { select: { name: true, email: true } },
+              car: { select: { name: true, pricePerDay: true } },
+              payment: true
+            }
+          }
+        },
+        orderBy: { issuedAt: 'asc' }
+      }),
+      prisma.payment.findMany({
+        where: {
+          status: 'COMPLETED',
+          createdAt: { gte: start, lt: end }
+        },
+        include: {
+          booking: {
+            include: {
+              user: { select: { name: true, email: true } },
+              car: { select: { name: true, pricePerDay: true } },
+              invoice: true
+            }
+          }
+        }
+      })
+    ]);
+    type InvoiceExportRecord = {
+      invoice: {
+        id: string;
+        invoiceNumber: string;
+        issuedAt: Date | null;
+        subtotal: number | null;
+        discountAmount: number | null;
+        taxAmount: number | null;
+        totalAmount: number | null;
+        dailyRate: number | null;
+        rentalDays: number | null;
+      };
+      booking: {
+        id: string;
+        fromDate: Date;
+        toDate: Date;
+        discountType: string | null;
+        discountValue: number | null;
+        user: { name: string; email: string };
+        car: { name: string; pricePerDay: number };
+      };
+      payment: { createdAt: Date; status: string; method: string; amount: number };
+    };
+    const invoiceRecords: InvoiceExportRecord[] = issuedInvoices
+      .filter(invoice => invoice.booking.payment?.status === 'COMPLETED')
+      .map(invoice => ({
+        invoice,
+        booking: invoice.booking,
+        payment: invoice.booking.payment!
+      }));
+    const invoiceIds = new Set(invoiceRecords.map(record => record.invoice.id));
+    for (const payment of legacyPayments) {
+      const invoice = payment.booking.invoice;
+      if (payment.status === 'COMPLETED' && invoice && !invoice.issuedAt && !invoiceIds.has(invoice.id)) {
+        invoiceRecords.push({ invoice, booking: payment.booking, payment });
+        invoiceIds.add(invoice.id);
+      }
+    }
+    invoiceRecords.sort((first, second) =>
+      (first.invoice.issuedAt || first.payment.createdAt).getTime()
+      - (second.invoice.issuedAt || second.payment.createdAt).getTime()
+    );
+
+    const escapeCsv = (value: string | number | Date) => {
+      let text = value instanceof Date ? value.toISOString() : String(value);
+      if (typeof value !== 'number' && /^\s*[=+\-@]/.test(text)) text = `'${text}`;
+      return `"${text.replace(/"/g, '""')}"`;
+    };
+    const rows: Array<Array<string | number | Date>> = [
+      ['Invoice Number', 'Issue Date', 'Booking ID', 'Customer', 'Email', 'Vehicle', 'Rental Days', 'Daily Rate (INR)', 'Pickup', 'Return', 'Subtotal (INR)', 'Discount (INR)', 'Tax (INR)', 'Total Paid (INR)', 'Payment Method', 'Payment Status']
+    ];
+
+    for (const { invoice, booking, payment } of invoiceRecords) {
+
+      const calculated = calculateBookingAmountsForBooking(booking);
+      const hasStoredTotal = (invoice.totalAmount ?? 0) > 0;
+      const subtotal = invoice.subtotal || calculated.subtotal;
+      const discount = hasStoredTotal ? invoice.discountAmount || 0 : calculated.discountAmount;
+      const tax = hasStoredTotal ? invoice.taxAmount || 0 : calculated.taxAmount;
+      rows.push([
+        invoice.invoiceNumber,
+        invoice.issuedAt || payment.createdAt,
+        booking.id,
+        booking.user.name,
+        booking.user.email,
+        booking.car.name,
+        invoice.rentalDays || calculated.days,
+        invoice.dailyRate || booking.car.pricePerDay,
+        booking.fromDate,
+        booking.toDate,
+        subtotal,
+        discount,
+        tax,
+        payment.amount,
+        payment.method,
+        payment.status
+      ]);
+    }
+
+    const csv = rows.map(row => row.map(escapeCsv).join(',')).join('\r\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="fitbros-invoices-${month}.csv"`);
+    return res.status(200).send(`\uFEFF${csv}`);
+  } catch (error: any) {
+    console.error('Export Monthly Invoices Error:', error);
+    return res.status(500).json({ message: 'Failed to export monthly invoices.' });
+  }
+};
+
 // Admin KYC Approve
 export const approveBooking = async (req: Request, res: Response) => {
   try {
@@ -345,6 +536,47 @@ export const approveBooking = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Approve Booking Error:', error);
     return res.status(500).json({ message: 'Failed to approve booking.' });
+  }
+};
+
+export const setBookingDiscount = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { discountType, discountValue } = req.body;
+
+    if (!['NONE', 'FIXED', 'PERCENTAGE'].includes(discountType) || typeof discountValue !== 'number' || !Number.isFinite(discountValue) || discountValue < 0) {
+      return res.status(400).json({ message: 'Provide a valid discount type and non-negative amount.' });
+    }
+    if (discountType === 'NONE' && discountValue !== 0) {
+      return res.status(400).json({ message: 'A no-discount booking must have a discount value of zero.' });
+    }
+    if (discountType === 'PERCENTAGE' && discountValue > 100) {
+      return res.status(400).json({ message: 'Percentage discounts cannot exceed 100%.' });
+    }
+
+    const booking = await prisma.booking.findUnique({
+      where: { id },
+      include: { car: true, payment: true }
+    });
+    if (!booking) return res.status(404).json({ message: 'Booking not found.' });
+    if (booking.status !== 'PENDING_ADMIN_APPROVAL' || booking.payment) {
+      return res.status(400).json({ message: 'Discounts can only be changed before approval and before a payment is started.' });
+    }
+
+    const amounts = calculateBookingAmounts(booking.car.pricePerDay, booking.fromDate, booking.toDate, discountType, discountValue);
+    if (discountType === 'FIXED' && discountValue > amounts.subtotal) {
+      return res.status(400).json({ message: 'Fixed discount cannot exceed the rental subtotal.' });
+    }
+
+    const updated = await prisma.booking.update({
+      where: { id },
+      data: { discountType, discountValue, discountAmount: amounts.discountAmount },
+      include: { car: true, payment: true, invoice: true }
+    });
+    return res.status(200).json({ message: 'Booking discount saved.', booking: updated, amounts });
+  } catch (error: any) {
+    console.error('Set Booking Discount Error:', error);
+    return res.status(500).json({ message: 'Failed to save booking discount.' });
   }
 };
 
@@ -429,11 +661,12 @@ export const processPayment = async (req: AuthenticatedRequest, res: Response) =
       return res.status(400).json({ message: 'Online payments must be processed through Razorpay checkout.' });
     }
 
+    const amounts = calculateBookingAmountsForBooking(booking);
     const payment = await prisma.payment.create({
       data: {
         bookingId: id,
         method,
-        amount: calculateBookingTotal(booking.car.pricePerDay, booking.fromDate, booking.toDate),
+        amount: amounts.totalAmount,
         status: 'PENDING'
       }
     });
@@ -456,7 +689,7 @@ export const confirmCashPayment = async (req: Request, res: Response) => {
 
     const booking = await prisma.booking.findUnique({
       where: { id },
-      include: { payment: true }
+      include: { car: true, payment: true, invoice: true }
     });
 
     if (!booking || !booking.payment) {
@@ -475,7 +708,7 @@ export const confirmCashPayment = async (req: Request, res: Response) => {
       return res.status(409).json({ message: 'This booking now conflicts with another active reservation and cannot be confirmed.' });
     }
 
-    const invoiceNum = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+    const amounts = calculateBookingAmountsForBooking(booking);
 
     const updated = await prisma.booking.update({
       where: { id },
@@ -483,14 +716,18 @@ export const confirmCashPayment = async (req: Request, res: Response) => {
         status: 'CONFIRMED',
         payment: {
           update: {
+            amount: amounts.totalAmount,
             status: 'COMPLETED'
           }
         },
-        invoice: {
-          create: {
-            invoiceNumber: invoiceNum
+        ...(!booking.invoice && {
+          invoice: {
+            create: {
+              invoiceNumber: createInvoiceNumber(),
+              ...getInvoiceData(amounts)
+            }
           }
-        }
+        })
       },
       include: { payment: true, invoice: true }
     });
@@ -534,9 +771,9 @@ export const markPaymentReceived = async (req: Request, res: Response) => {
       return res.status(409).json({ message: 'This booking conflicts with another active reservation and cannot be confirmed.' });
     }
 
-    const amount = calculateBookingTotal(booking.car.pricePerDay, booking.fromDate, booking.toDate);
+    const amounts = calculateBookingAmountsForBooking(booking);
     const invoiceNumber = booking.invoice?.invoiceNumber
-      || `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+      || createInvoiceNumber();
 
     const updated = await prisma.booking.update({
       where: { id },
@@ -546,20 +783,20 @@ export const markPaymentReceived = async (req: Request, res: Response) => {
           ? {
               update: {
                 method,
-                amount,
+                amount: amounts.totalAmount,
                 status: 'COMPLETED'
               }
             }
           : {
               create: {
                 method,
-                amount,
+                amount: amounts.totalAmount,
                 status: 'COMPLETED'
               }
             },
         ...(!booking.invoice && {
           invoice: {
-            create: { invoiceNumber }
+            create: { invoiceNumber, ...getInvoiceData(amounts) }
           }
         })
       },
@@ -814,7 +1051,7 @@ export const createRazorpayOrder = async (req: AuthenticatedRequest, res: Respon
       return res.status(500).json({ message: razorpayConfigError });
     }
 
-    const totalAmount = calculateBookingTotal(booking.car.pricePerDay, booking.fromDate, booking.toDate);
+    const totalAmount = calculateBookingAmountsForBooking(booking).totalAmount;
 
     // Razorpay orders expect the amount in paise (1 INR = 100 Paise)
     const amountInPaise = Math.round(totalAmount * 100);
@@ -901,9 +1138,7 @@ export const verifyRazorpayPayment = async (req: AuthenticatedRequest, res: Resp
       return res.status(409).json({ message: 'Payment was received, but this booking now conflicts with another reservation. Please contact support for assistance.' });
     }
 
-    const totalAmount = calculateBookingTotal(booking.car.pricePerDay, booking.fromDate, booking.toDate);
-
-    const invoiceNum = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+    const amounts = calculateBookingAmountsForBooking(booking);
 
     let resolvedPaymentMethod = normalizeRazorpayMethod(payment_method || method || paymentMethod);
 
@@ -923,13 +1158,14 @@ export const verifyRazorpayPayment = async (req: AuthenticatedRequest, res: Resp
         payment: {
           create: {
             method: resolvedPaymentMethod,
-            amount: totalAmount,
+            amount: amounts.totalAmount,
             status: 'COMPLETED'
           }
         },
         invoice: {
           create: {
-            invoiceNumber: invoiceNum
+            invoiceNumber: createInvoiceNumber(),
+            ...getInvoiceData(amounts)
           }
         }
       },
