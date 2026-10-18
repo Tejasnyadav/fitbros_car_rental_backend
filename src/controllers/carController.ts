@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import prisma from '../config/prisma';
+import { getBlockingBookingStatusWhere, getReservationOverlapWhere } from '../utils/bookingAvailability';
 
 // Add new car (Admin Only)
 export const createCar = async (req: Request, res: Response) => {
@@ -37,12 +38,10 @@ export const getAllCarsForAdmin = async (req: Request, res: Response) => {
 
     const now = new Date();
 
-    // Query active/confirmed bookings overlapping the current timestamp
+    // Only unexpired holds and confirmed trips should affect current fleet availability.
     const activeBookingsToday = await prisma.booking.findMany({
       where: {
-        status: { notIn: ['REJECTED', 'CLOSED'] },
-        fromDate: { lte: now },
-        toDate: { gte: now }
+        ...getReservationOverlapWhere(now, new Date(now.getTime() + 1), now)
       },
       select: {
         carId: true,
@@ -128,10 +127,12 @@ export const deleteCar = async (req: Request, res: Response) => {
     }
 
     // Optionally check if vehicle has active bookings before deletion
+    const now = new Date();
     const activeBooking = await prisma.booking.findFirst({
       where: {
         carId: id,
-        status: { in: ['CONFIRMED', 'ACTIVE', 'PENDING_ADMIN_APPROVAL', 'APPROVED_PENDING_PAYMENT'] }
+        toDate: { gt: now },
+        ...getBlockingBookingStatusWhere(now)
       }
     });
 
@@ -198,9 +199,8 @@ export const getCarsForUser = async (req: Request, res: Response) => {
       // Overlap formula: start <= booking.toDate AND end >= booking.fromDate
       const overlappingBookings = await prisma.booking.findMany({
         where: {
-          status: { notIn: ['REJECTED', 'CLOSED'] },
-          fromDate: { lt: end },
-          toDate: { gt: start }
+          carId: { in: cars.map(car => car.id) },
+          ...getReservationOverlapWhere(start, end)
         },
         select: {
           carId: true

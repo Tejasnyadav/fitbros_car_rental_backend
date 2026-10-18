@@ -3,6 +3,7 @@ import prisma from '../config/prisma';
 import { AuthenticatedRequest } from '../middleware/auth';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
+import { getReservationOverlapWhere, isPaymentHoldExpired } from '../utils/bookingAvailability';
 
 const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
 
@@ -46,13 +47,16 @@ const getRazorpayConfigError = () => {
 };
 
 // Helper: Check Date Overlap
-const hasOverlap = async (carId: string, fromDate: Date, toDate: Date): Promise<boolean> => {
+const hasOverlap = async (
+  carId: string,
+  fromDate: Date,
+  toDate: Date,
+  excludeBookingId?: string
+): Promise<boolean> => {
   const overlap = await prisma.booking.findFirst({
     where: {
       carId,
-      status: { notIn: ['REJECTED', 'CLOSED'] },
-      fromDate: { lt: toDate },
-      toDate: { gt: fromDate }
+      ...getReservationOverlapWhere(fromDate, toDate, new Date(), excludeBookingId)
     }
   });
   return !!overlap;
@@ -114,10 +118,17 @@ export const createBooking = async (req: AuthenticatedRequest, res: Response) =>
       return res.status(400).json({ message: 'Number of members must be a positive whole number.' });
     }
 
-    // CRITICAL overlap validation
+    const car = await prisma.car.findUnique({ where: { id: carId }, select: { id: true, status: true } });
+    if (!car) {
+      return res.status(404).json({ message: 'Selected vehicle was not found.' });
+    }
+    if (car.status !== 'AVAILABLE') {
+      return res.status(409).json({ message: 'This vehicle is currently unavailable. Please choose another car.' });
+    }
+
     const exists = await hasOverlap(carId, start, end);
     if (exists) {
-      return res.status(400).json({ message: 'Already booked for selected pickup and return times.' });
+      return res.status(409).json({ message: 'This car is no longer available for the selected pickup and return times. Please choose another time or car.' });
     }
 
     // Create the booking and details
@@ -309,6 +320,10 @@ export const approveBooking = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Booking is not in pending approval state.' });
     }
 
+    if (await hasOverlap(booking.carId, booking.fromDate, booking.toDate, booking.id)) {
+      return res.status(409).json({ message: 'This booking conflicts with another active reservation and cannot be approved.' });
+    }
+
     const updated = await prisma.booking.update({
       where: { id },
       data: { status: 'APPROVED_PENDING_PAYMENT' }
@@ -382,7 +397,7 @@ export const processPayment = async (req: AuthenticatedRequest, res: Response) =
 
     const booking = await prisma.booking.findUnique({
       where: { id },
-      include: { car: true }
+      include: { car: true, payment: true }
     });
     if (!booking) return res.status(404).json({ message: 'Booking not found.' });
 
@@ -390,24 +405,27 @@ export const processPayment = async (req: AuthenticatedRequest, res: Response) =
       return res.status(400).json({ message: 'Booking must be approved by admin prior to payment.' });
     }
 
+    if (booking.payment) {
+      return res.status(400).json({ message: 'A payment method has already been selected for this booking.' });
+    }
+
+    if (isPaymentHoldExpired(booking.updatedAt)) {
+      return res.status(409).json({ message: 'The payment window expired. Please contact support to arrange a new booking.' });
+    }
+
     if (method !== 'Cash') {
       return res.status(400).json({ message: 'Online payments must be processed through Razorpay checkout.' });
     }
 
-    const updatedBooking = await prisma.booking.update({
-      where: { id },
+    const payment = await prisma.payment.create({
       data: {
-        status: 'APPROVED_PENDING_PAYMENT',
-        payment: {
-          create: {
-            method,
-            amount: calculateBookingTotal(booking.car.pricePerDay, booking.fromDate, booking.toDate),
-            status: 'PENDING'
-          }
-        }
-      },
-      include: { payment: true, invoice: true }
+        bookingId: id,
+        method,
+        amount: calculateBookingTotal(booking.car.pricePerDay, booking.fromDate, booking.toDate),
+        status: 'PENDING'
+      }
     });
+    const updatedBooking = { ...booking, payment, invoice: null };
 
     return res.status(200).json({
       message: 'Cash payment choice logged. Booking is pending admin verification of cash.',
@@ -435,6 +453,14 @@ export const confirmCashPayment = async (req: Request, res: Response) => {
 
     if (booking.payment.method !== 'Cash') {
       return res.status(400).json({ message: 'This booking is not set to Cash payment.' });
+    }
+
+    if (booking.status !== 'APPROVED_PENDING_PAYMENT' || booking.payment.status !== 'PENDING') {
+      return res.status(400).json({ message: 'This cash payment is no longer awaiting confirmation.' });
+    }
+
+    if (await hasOverlap(booking.carId, booking.fromDate, booking.toDate, booking.id)) {
+      return res.status(409).json({ message: 'This booking now conflicts with another active reservation and cannot be confirmed.' });
     }
 
     const invoiceNum = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -674,7 +700,7 @@ export const createRazorpayOrder = async (req: AuthenticatedRequest, res: Respon
 
     const booking = await prisma.booking.findUnique({
       where: { id },
-      include: { car: true }
+      include: { car: true, payment: true }
     });
 
     if (!booking) {
@@ -687,6 +713,14 @@ export const createRazorpayOrder = async (req: AuthenticatedRequest, res: Respon
 
     if (booking.status !== 'APPROVED_PENDING_PAYMENT') {
       return res.status(400).json({ message: 'Booking must be approved by admin prior to payment.' });
+    }
+
+    if (booking.payment) {
+      return res.status(400).json({ message: 'A payment method has already been selected for this booking.' });
+    }
+
+    if (isPaymentHoldExpired(booking.updatedAt)) {
+      return res.status(409).json({ message: 'The payment window expired. Please contact support to arrange a new booking.' });
     }
 
     const razorpayConfigError = getRazorpayConfigError();
@@ -743,7 +777,7 @@ export const verifyRazorpayPayment = async (req: AuthenticatedRequest, res: Resp
 
     const booking = await prisma.booking.findUnique({
       where: { id },
-      include: { car: true }
+      include: { car: true, payment: true }
     });
 
     if (!booking) {
@@ -752,6 +786,10 @@ export const verifyRazorpayPayment = async (req: AuthenticatedRequest, res: Resp
 
     if (booking.status !== 'APPROVED_PENDING_PAYMENT') {
       return res.status(400).json({ message: 'Booking is not in approved pending payment state.' });
+    }
+
+    if (booking.payment) {
+      return res.status(400).json({ message: 'A payment method has already been selected for this booking.' });
     }
 
     const keySecret = process.env.RAZORPAY_KEY_SECRET || '';
@@ -766,6 +804,15 @@ export const verifyRazorpayPayment = async (req: AuthenticatedRequest, res: Resp
 
     if (generatedSignature !== razorpay_signature) {
       return res.status(400).json({ message: 'Payment signature verification failed. Transaction tampered.' });
+    }
+
+    if (await hasOverlap(booking.carId, booking.fromDate, booking.toDate, booking.id)) {
+      console.error('Verified payment conflicts with another reservation; manual refund review required.', {
+        bookingId: id,
+        paymentId: razorpay_payment_id,
+        orderId: razorpay_order_id
+      });
+      return res.status(409).json({ message: 'Payment was received, but this booking now conflicts with another reservation. Please contact support for assistance.' });
     }
 
     const totalAmount = calculateBookingTotal(booking.car.pricePerDay, booking.fromDate, booking.toDate);
