@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import { getReservationOverlapWhere, isPaymentHoldExpired } from '../utils/bookingAvailability';
 
 const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
+const MAX_KYC_DOCUMENT_PAYLOAD_BYTES = 12 * 1024 * 1024;
 
 const calculateBookingTotal = (pricePerDay: number, fromDate: Date, toDate: Date): number => {
   const duration = toDate.getTime() - fromDate.getTime();
@@ -90,6 +91,17 @@ export const createBooking = async (req: AuthenticatedRequest, res: Response) =>
 
     if (!license || !aadhaar || !pan || !selfie || !signature) {
       return res.status(400).json({ message: 'All KYC uploads and the electronic signature are required.' });
+    }
+
+    if (![license, aadhaar, pan, selfie].every(value => typeof value === 'string')) {
+      return res.status(400).json({ message: 'KYC documents must be uploaded as files or file URLs.' });
+    }
+
+    const kycPayloadBytes = Buffer.byteLength(JSON.stringify({ license, aadhaar, pan, selfie }), 'utf8');
+    if (kycPayloadBytes > MAX_KYC_DOCUMENT_PAYLOAD_BYTES) {
+      return res.status(413).json({
+        message: 'The combined KYC files are too large. Please use PDFs up to 2 MB or select images to compress them automatically.'
+      });
     }
 
     const start = new Date(fromDate);
